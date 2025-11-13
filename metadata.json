@@ -1,0 +1,5 @@
+{
+  "name": "Direct-flight.com",
+  "description": "A visually stunning, interactive 3D globe built with React and D3.js. Explore countries, zoom in and out, and rotate the globe with smooth mouse controls. Styled with Tailwind CSS for a modern look.",
+  "requestFramePermissions": []
+}

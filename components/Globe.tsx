@@ -219,7 +219,7 @@ const Globe: React.FC<GlobeProps> = ({ worldData, airportData, routesData, airpo
                 }
             }
         });
-  }, [allDestinationIataCodes, arrival, departure, routesToDraw]);
+  }, [allDestinationIataCodes, arrival, departure, routesToDraw, is3DView]);
 
   // Master setup effect - re-runs when view changes
   useEffect(() => {
@@ -406,7 +406,7 @@ const Globe: React.FC<GlobeProps> = ({ worldData, airportData, routesData, airpo
 
   return (
     <div ref={parentRef} className="w-full h-full cursor-grab relative">
-      <svg ref={svgRef}></svg>
+      <svg ref={svgRef} className="w-full h-full"></svg>
       <div ref={tooltipRef} className="absolute hidden bg-white text-gray-800 text-sm px-3 py-1 rounded-md shadow-lg pointer-events-none z-20 border border-gray-200"></div>
     </div>
   );

@@ -1,8 +1,9 @@
+
 import React, { useState, useEffect, useMemo } from 'react';
 import Globe from './components/Globe';
 import LeftPanel from './components/LeftPanel';
+import Header, { RouteFinder } from './components/Header';
 import BottomAd from './components/BottomAd';
-import Header from './components/Header';
 
 // Since d3 is loaded from a CDN, we can declare it as a global
 declare const d3: any;
@@ -17,6 +18,22 @@ const App: React.FC = () => {
   const [selectedRouteInfo, setSelectedRouteInfo] = useState<any | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [is3DView, setIs3DView] = useState<boolean>(true);
+  const [isMobile, setIsMobile] = useState(window.innerWidth < 768);
+  const [isTablet, setIsTablet] = useState(window.innerWidth >= 768 && window.innerWidth < 1024);
+
+
+  useEffect(() => {
+    const handleResize = () => {
+      const width = window.innerWidth;
+      setIsMobile(width < 768);
+      setIsTablet(width >= 768 && width < 1024);
+    };
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
+  const effectiveIs3DView = (isMobile || isTablet) ? false : is3DView;
+  const isMobileOrTablet = isMobile || isTablet;
 
   const airportMap = useMemo(() => {
     if (!airportData) return new Map();
@@ -151,15 +168,18 @@ const App: React.FC = () => {
                   setDeparture={setDeparture}
                   arrival={arrival}
                   setArrival={setArrival}
-                  is3DView={is3DView}
+                  is3DView={effectiveIs3DView}
                   setIs3DView={setIs3DView}
+                  isMobileOrTablet={isMobileOrTablet}
+                  selectedRouteInfo={selectedRouteInfo}
               />
-              <div className="flex flex-grow h-full overflow-hidden">
+              <div className="flex flex-grow overflow-hidden relative">
                   <LeftPanel 
                     info={selectedRouteInfo}
                     clearRoute={() => { setDeparture(null); setArrival(null); }}
+                    isMobileOrTablet={isMobileOrTablet}
                   />
-                  <main className="flex-grow h-full relative">
+                  <main className="flex-grow relative">
                     <Globe 
                       worldData={worldData} 
                       airportData={airportData} 
@@ -169,10 +189,14 @@ const App: React.FC = () => {
                       setDeparture={setDeparture}
                       arrival={arrival}
                       setArrival={setArrival}
-                      is3DView={is3DView}
+                      is3DView={effectiveIs3DView}
                     />
-                    <BottomAd />
                   </main>
+                  {!selectedRouteInfo && (
+                    <div className="absolute z-10 bottom-4 left-1/2 -translate-x-1/2 w-full max-w-sm px-4 md:bottom-0 md:left-0 md:w-full md:translate-x-0 md:max-w-none md:px-0 lg:left-96 lg:right-0 lg:w-auto">
+                      <BottomAd />
+                    </div>
+                  )}
               </div>
             </>
           ) : (

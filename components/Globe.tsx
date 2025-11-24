@@ -1,14 +1,14 @@
 import React, { useRef, useEffect, useCallback, useMemo, useState } from 'react';
-
-// Declare d3 and topojson as globals since they are loaded from CDN
-declare const d3: any;
-declare const topojson: any;
+import * as d3 from 'd3';
+import * as topojson from 'topojson-client';
 
 interface GlobeProps {
   worldData: any;
   airportData: any;
   routesData: any;
   airportMap: Map<string, any>;
+  statesData: any;
+  lakesData: any;
   departure: any | null;
   setDeparture: (airport: any | null) => void;
   arrival: any | null;
@@ -16,7 +16,7 @@ interface GlobeProps {
   is3DView: boolean;
 }
 
-const Globe: React.FC<GlobeProps> = ({ worldData, airportData, routesData, airportMap, departure, setDeparture, arrival, setArrival, is3DView }) => {
+const Globe: React.FC<GlobeProps> = ({ worldData, airportData, routesData, airportMap, statesData, lakesData, departure, setDeparture, arrival, setArrival, is3DView }) => {
   const svgRef = useRef<SVGSVGElement>(null);
   const parentRef = useRef<HTMLDivElement>(null);
   const tooltipRef = useRef<HTMLDivElement>(null);
@@ -25,6 +25,7 @@ const Globe: React.FC<GlobeProps> = ({ worldData, airportData, routesData, airpo
   const hoveredAirportRef = useRef<any | null>(null);
   const zoomBehaviorRef = useRef<any>(null);
   const [dimensions, setDimensions] = useState({ width: 0, height: 0 });
+  const [setupComplete, setSetupComplete] = useState(0);
 
   // Use a ref to hold the latest props to avoid stale closures in D3 event handlers
   const propsRef = useRef({ departure, arrival, setDeparture, setArrival });
@@ -42,7 +43,8 @@ const Globe: React.FC<GlobeProps> = ({ worldData, airportData, routesData, airpo
     const codes = new Set<string>();
     if (departure) {
         routesData.forEach((route: any) => {
-            if (route.source_airport === departure.iata_code) {
+            // Only show DIRECT flights (0 stops)
+            if (route.source_airport === departure.iata_code && route.stops === '0') {
                 const destAirport = airportMap.get(route.destination_airport);
                 if (destAirport) {
                     codes.add(destAirport.iata_code);
@@ -66,8 +68,9 @@ const Globe: React.FC<GlobeProps> = ({ worldData, airportData, routesData, airpo
   const routesToDraw = useMemo(() => {
     let routes: any[] = [];
     if (departure && arrival) {
-        const routeExists = routesData.some((r: any) => 
-            r.source_airport === departure.iata_code && r.destination_airport === arrival.iata_code
+        // Only show DIRECT flights (0 stops)
+        const routeExists = routesData.some((r: any) =>
+            r.source_airport === departure.iata_code && r.destination_airport === arrival.iata_code && r.stops === '0'
         );
         if (routeExists) {
              routes.push({
@@ -75,7 +78,8 @@ const Globe: React.FC<GlobeProps> = ({ worldData, airportData, routesData, airpo
                 coordinates: densify([
                     [departure.longitude_deg, departure.latitude_deg],
                     [arrival.longitude_deg, arrival.latitude_deg]
-                ])
+                ]),
+                destinationIataCode: arrival.iata_code
             });
         }
     } else if (departure) {
@@ -87,7 +91,8 @@ const Globe: React.FC<GlobeProps> = ({ worldData, airportData, routesData, airpo
                      coordinates: densify([
                         [departure.longitude_deg, departure.latitude_deg],
                         [destAirport.longitude_deg, destAirport.latitude_deg]
-                    ])
+                    ]),
+                    destinationIataCode: iata
                 });
             }
         });
@@ -101,26 +106,150 @@ const Globe: React.FC<GlobeProps> = ({ worldData, airportData, routesData, airpo
     const svg = d3.select(svgRef.current);
     const pathGenerator = d3.geoPath().projection(projection);
 
-    svg.selectAll('.ocean').attr('d', pathGenerator({ type: 'Sphere' }));
+    // Fast path updates without creating new generators
+    const oceanPath = pathGenerator({ type: 'Sphere' });
+    svg.selectAll('.ocean').attr('d', oceanPath);
+
     if (!is3DView) {
         svg.selectAll('.ocean').attr('width', dimensions.width).attr('height', dimensions.height);
     }
-    svg.selectAll('.country').attr('d', pathGenerator);
-    svg.select('.routes').selectAll('path').attr('d', pathGenerator);
 
-    svg.selectAll('.airport-group')
-        .attr('transform', (d: any) => {
-            const coords = projection([d.longitude_deg, d.latitude_deg]);
-            return coords ? `translate(${coords[0]}, ${coords[1]})` : 'translate(-9999,-9999)';
-        })
-        .style('display', (d: any) => {
-            if (!is3DView) return 'inline';
-            const [lon, lat] = [d.longitude_deg, d.latitude_deg];
+    // Batch update countries
+    const countries = svg.selectAll('.country').nodes();
+    countries.forEach((node: any) => {
+      node.setAttribute('d', pathGenerator(d3.select(node).datum()));
+    });
+
+    // Batch update states/provinces
+    const states = svg.selectAll('.state-border').nodes();
+    states.forEach((node: any) => {
+      node.setAttribute('d', pathGenerator(d3.select(node).datum()));
+    });
+
+    // Batch update lakes
+    const lakes = svg.selectAll('.lake').nodes();
+    lakes.forEach((node: any) => {
+      node.setAttribute('d', pathGenerator(d3.select(node).datum()));
+    });
+
+    // Update country labels - only show when zoomed in for performance
+    const countryLabels = svg.selectAll('.country-label').nodes();
+    const currentScale = projection.scale();
+
+    // Only show labels when significantly zoomed in to improve performance
+    let showLabels = false;
+    if (is3DView) {
+      const minScale = dimensions.width / 2.2 * 0.8;
+      showLabels = currentScale > minScale * 3; // Only show when 3x zoomed in
+    } else {
+      const initialScale2D = viewStateRef.mercatorInitial.scale;
+      const zoomLevel = currentScale / initialScale2D;
+      showLabels = zoomLevel > 2; // Only show when 2x zoomed in
+    }
+
+    if (showLabels) {
+      countryLabels.forEach((node: any) => {
+        const d = d3.select(node).datum() as any;
+
+        // For MultiPolygon, find the largest polygon and use its centroid
+        let geoCentroid;
+        if (d.geometry.type === 'MultiPolygon') {
+          // Find the polygon with the largest area
+          let largestPolygon = d.geometry.coordinates[0];
+          let maxArea = 0;
+
+          d.geometry.coordinates.forEach((polygon: any) => {
+            const area = d3.geoArea({ type: 'Polygon', coordinates: polygon });
+            if (area > maxArea) {
+              maxArea = area;
+              largestPolygon = polygon;
+            }
+          });
+
+          geoCentroid = d3.geoCentroid({ type: 'Polygon', coordinates: largestPolygon });
+        } else {
+          geoCentroid = d3.geoCentroid(d);
+        }
+
+        const coords = projection(geoCentroid);
+
+        if (coords && isFinite(coords[0]) && isFinite(coords[1])) {
+          node.setAttribute('x', coords[0]);
+          node.setAttribute('y', coords[1]);
+
+          if (is3DView) {
             const [rLon, rLat] = projection.rotate();
             const centerPoint: [number, number] = [-rLon, -rLat];
-            const distance = d3.geoDistance([lon, lat], centerPoint);
-            return distance > Math.PI / 2 ? 'none' : 'inline';
-        });
+            const distance = d3.geoDistance(geoCentroid, centerPoint);
+            node.style.display = distance > Math.PI / 2 ? 'none' : 'block';
+          } else {
+            node.style.display = 'block';
+          }
+        } else {
+          node.style.display = 'none';
+        }
+      });
+    } else {
+      // Hide all labels when zoomed out
+      countryLabels.forEach((node: any) => {
+        node.style.display = 'none';
+      });
+    }
+
+    // Batch update routes with minimal processing
+    const routes = svg.select('.routes').selectAll('path').nodes();
+    if (is3DView) {
+      const [rLon, rLat] = projection.rotate();
+      const centerPoint: [number, number] = [-rLon, -rLat];
+
+      routes.forEach((node: any) => {
+        const d = d3.select(node).datum() as any;
+        node.setAttribute('d', pathGenerator(d));
+
+        // Quick visibility check
+        const coords = d.coordinates;
+        if (coords && coords.length > 0) {
+          let visible = false;
+          for (let i = 0; i < coords.length && !visible; i++) {
+            if (d3.geoDistance(coords[i], centerPoint) <= Math.PI / 2) {
+              visible = true;
+            }
+          }
+          node.style.display = visible ? 'inline' : 'none';
+        }
+      });
+    } else {
+      routes.forEach((node: any) => {
+        node.setAttribute('d', pathGenerator(d3.select(node).datum()));
+        node.style.display = 'inline';
+      });
+    }
+
+    // Batch update airports
+    const airports = svg.selectAll('.airport-group').nodes();
+    if (is3DView) {
+      const [rLon, rLat] = projection.rotate();
+      const centerPoint: [number, number] = [-rLon, -rLat];
+
+      airports.forEach((node: any) => {
+        const d = d3.select(node).datum() as any;
+        const coords = projection([d.longitude_deg, d.latitude_deg]);
+        if (coords) {
+          node.setAttribute('transform', `translate(${coords[0]},${coords[1]})`);
+          const distance = d3.geoDistance([d.longitude_deg, d.latitude_deg], centerPoint);
+          node.style.display = distance > Math.PI / 2 ? 'none' : 'inline';
+        }
+      });
+    } else {
+      airports.forEach((node: any) => {
+        const d = d3.select(node).datum() as any;
+        const coords = projection([d.longitude_deg, d.latitude_deg]);
+        if (coords) {
+          node.setAttribute('transform', `translate(${coords[0]},${coords[1]})`);
+          node.style.display = 'inline';
+        }
+      });
+    }
 
     if (hoveredAirportRef.current) {
         const d = hoveredAirportRef.current;
@@ -138,9 +267,9 @@ const Globe: React.FC<GlobeProps> = ({ worldData, airportData, routesData, airpo
   });
 
   useEffect(() => {
-    if (!svgRef.current) return;
+    if (!svgRef.current || !projectionRef.current) return;
     const svg = d3.select(svgRef.current);
-    
+
     svg.selectAll('.airport-group')
       .style('opacity', (d: any) => {
           if (!departure) return 1;
@@ -195,7 +324,7 @@ const Globe: React.FC<GlobeProps> = ({ worldData, airportData, routesData, airpo
                             d3.select(this).attr('stroke-dasharray', null).attr('stroke-dashoffset', null);
                         });
                 }),
-            update => update,
+            update => update.attr('d', pathGenerator),
             exit => exit.transition().duration(300).style('opacity', 0).remove()
         )
         .each(function(this: SVGPathElement, d: any) {
@@ -219,7 +348,7 @@ const Globe: React.FC<GlobeProps> = ({ worldData, airportData, routesData, airpo
                 }
             }
         });
-  }, [allDestinationIataCodes, arrival, departure, routesToDraw, is3DView]);
+  }, [allDestinationIataCodes, arrival, departure, routesToDraw, is3DView, setupComplete]);
 
   // Master setup effect - re-runs when view changes
   useEffect(() => {
@@ -266,44 +395,192 @@ const Globe: React.FC<GlobeProps> = ({ worldData, airportData, routesData, airpo
     }
 
     svg.append('g').selectAll('.country').data(countries.features).enter().append('path').attr('class', 'country').attr('fill', '#f5f5f4').attr('stroke', '#a8a29e').attr('stroke-width', 0.5);
+
+    // Add state/province borders
+    if (statesData && statesData.features) {
+      svg.append('g').attr('class', 'states')
+        .selectAll('.state-border')
+        .data(statesData.features)
+        .enter()
+        .append('path')
+        .attr('class', 'state-border')
+        .attr('fill', 'none')
+        .attr('stroke', '#a8a29e')
+        .attr('stroke-width', 0.4)
+        .attr('opacity', 0.8);
+    }
+
+    // Add lakes
+    if (lakesData && lakesData.features) {
+      svg.append('g').attr('class', 'lakes')
+        .selectAll('.lake')
+        .data(lakesData.features)
+        .enter()
+        .append('path')
+        .attr('class', 'lake')
+        .attr('fill', '#a2d4f5')
+        .attr('stroke', '#60a5fa')
+        .attr('stroke-width', 0.3)
+        .attr('opacity', 0.8);
+    }
+
+    // Add country labels
+    svg.append('g').attr('class', 'country-labels')
+      .selectAll('text')
+      .data(countries.features)
+      .enter()
+      .append('text')
+      .attr('class', 'country-label')
+      .attr('text-anchor', 'middle')
+      .attr('font-size', '10px')
+      .attr('font-weight', '500')
+      .attr('fill', '#a8a29e')
+      .attr('pointer-events', 'none')
+      .style('user-select', 'none')
+      .text((d: any) => d.properties.name);
+
     svg.append('g').attr('class', 'routes');
     svg.append('g').attr('class', 'airports').selectAll('g').data(airportData).join('g').attr('class', 'airport-group').style('cursor', 'pointer')
       .on('click', (event: MouseEvent, d: any) => { event.stopPropagation(); const { departure, arrival, setDeparture, setArrival } = propsRef.current; if (departure && !arrival) setArrival(d); else if (departure && arrival) { if (d.iata_code !== departure.iata_code) setArrival(d); else { setDeparture(null); setArrival(null); } } else { setDeparture(d); setArrival(null); } })
       .on('mouseover', function(event: MouseEvent, d: any) {
           hoveredAirportRef.current = d;
           const proj = projectionRef.current; if (!proj) return; const coords = proj([d.longitude_deg, d.latitude_deg]); if (!coords) return;
-          d3.select(this).select('.airport-dot').attr('stroke', 'black').attr('stroke-width', 1.5);
+
+          // Highlight route if departure is selected and hovering over a destination
+          const { departure } = propsRef.current;
+          if (departure && d.iata_code !== departure.iata_code) {
+              // Make dot green when hovering over destination
+              d3.select(this).select('.airport-dot').attr('stroke', 'rgba(34, 197, 94, 1)').attr('stroke-width', 2).attr('fill', 'rgba(34, 197, 94, 1)');
+
+              const svg = d3.select(svgRef.current);
+              svg.select('.routes').selectAll('path').each(function(routeData: any) {
+                  // Use IATA code matching instead of coordinates for precise matching
+                  if (routeData && routeData.destinationIataCode === d.iata_code) {
+                      d3.select(this).attr('stroke', 'rgba(34, 197, 94, 1)').attr('stroke-width', 3).attr('data-hovered', 'true');
+                  }
+              });
+          } else {
+              // Default black stroke for non-destination airports
+              d3.select(this).select('.airport-dot').attr('stroke', 'black').attr('stroke-width', 1.5);
+          }
+
           d3.select(tooltipRef.current).style('display', 'block').html(d.name).style('left', `${coords[0]}px`).style('top', `${coords[1] - 10}px`).style('transform', 'translateX(-50%) translateY(-100%)');
       })
       .on('mouseout', function() {
           hoveredAirportRef.current = null;
-          d3.select(this).select('.airport-dot').attr('stroke', 'none');
+          // Reset dot to original yellow color
+          d3.select(this).select('.airport-dot').attr('stroke', 'none').attr('fill', '#fbbf24');
           d3.select(tooltipRef.current).style('display', 'none');
+
+          // Remove route highlight
+          const svg = d3.select(svgRef.current);
+          svg.select('.routes').selectAll('path').each(function() {
+              const self = d3.select(this);
+              if (self.attr('data-hovered') === 'true') {
+                  self.attr('data-hovered', 'false');
+                  // Reset to normal style unless it's a selected/pulsing route
+                  if (self.attr('data-pulsing') !== 'true') {
+                      self.attr('stroke', 'rgba(59, 130, 246, 0.7)').attr('stroke-width', 1.5);
+                  }
+              }
+          });
       })
       .call((g: any) => g.append('circle').attr('r', 10).attr('fill', 'transparent'))
       .call((g: any) => g.append('circle').attr('class', 'airport-dot').style('pointer-events', 'none').attr('r', 2.5).attr('fill', '#fbbf24'));
 
     if (is3DView) {
       const sensitivity = 75;
-      const drag = d3.drag().on('drag', (event: any) => { if (renderFuncRef.current) { const proj = projectionRef.current; if (!proj) return; const rotate = proj.rotate(); const k = sensitivity / proj.scale(); const newRotation: [number, number, number] = [rotate[0] + event.dx * k, rotate[1] - event.dy * k, rotate[2]]; if (newRotation[1] > 90) newRotation[1] = 90; if (newRotation[1] < -90) newRotation[1] = -90; proj.rotate(newRotation); renderFuncRef.current(); } });
-      const wheel = (event: WheelEvent) => { event.preventDefault(); if (renderFuncRef.current) { const proj = projectionRef.current; if (!proj) return; const currentScale = proj.scale(); let targetScale = currentScale * Math.pow(2, -event.deltaY * 0.002); const scaleExtent = [0.8 * initialScale, 15 * initialScale]; const clampedScale = Math.max(scaleExtent[0], Math.min(scaleExtent[1], targetScale)); if (currentScale === clampedScale) return; const pointer = d3.pointer(event, svgRef.current) as [number, number]; const geoBefore = proj.invert(pointer); proj.scale(clampedScale); const geoAfter = proj.invert(pointer); if (geoBefore && geoAfter) { const newRotate = [proj.rotate()[0] + geoAfter[0] - geoBefore[0], proj.rotate()[1] + geoAfter[1] - geoBefore[1], proj.rotate()[2]]; proj.rotate(newRotate); } renderFuncRef.current(); } };
+      let rafId: number | null = null;
+
+      const drag = d3.drag().on('drag', (event: any) => {
+        const proj = projectionRef.current;
+        if (!proj) return;
+
+        const rotate = proj.rotate();
+        const k = sensitivity / proj.scale();
+        const newRotation: [number, number, number] = [rotate[0] + event.dx * k, rotate[1] - event.dy * k, rotate[2]];
+        if (newRotation[1] > 90) newRotation[1] = 90;
+        if (newRotation[1] < -90) newRotation[1] = -90;
+        proj.rotate(newRotation);
+
+        // Throttle rendering using RAF
+        if (rafId === null) {
+          rafId = requestAnimationFrame(() => {
+            if (renderFuncRef.current) renderFuncRef.current();
+            rafId = null;
+          });
+        }
+      });
+
+      const wheel = (event: WheelEvent) => {
+        event.preventDefault();
+        const proj = projectionRef.current;
+        if (!proj) return;
+
+        const currentScale = proj.scale();
+        const targetScale = currentScale * Math.pow(2, -event.deltaY * 0.0015);
+        const scaleExtent = [0.8 * initialScale, 15 * initialScale];
+        const clampedScale = Math.max(scaleExtent[0], Math.min(scaleExtent[1], targetScale));
+
+        if (currentScale === clampedScale) return;
+
+        const pointer = d3.pointer(event, svgRef.current) as [number, number];
+        const geoBefore = proj.invert(pointer);
+        proj.scale(clampedScale);
+        const geoAfter = proj.invert(pointer);
+
+        if (geoBefore && geoAfter) {
+          const newRotate = [proj.rotate()[0] + geoAfter[0] - geoBefore[0], proj.rotate()[1] + geoAfter[1] - geoBefore[1], proj.rotate()[2]];
+          proj.rotate(newRotate);
+        }
+
+        // Throttle rendering using RAF
+        if (rafId === null) {
+          rafId = requestAnimationFrame(() => {
+            if (renderFuncRef.current) renderFuncRef.current();
+            rafId = null;
+          });
+        }
+      };
+
       d3.select(parentNode).call(drag).on('wheel.zoom', wheel);
     } else {
-      const zoom = d3.zoom().scaleExtent([0.5, 30]).on('zoom', (event: any) => {
-        const { transform } = event;
-        const { scale: s0, translate: t0 } = viewStateRef.mercatorInitial;
-        projection.scale(s0 * transform.k);
-        projection.translate([
+      let rafId: number | null = null;
+
+      const zoom = d3.zoom()
+        .scaleExtent([0.5, 30])
+        .filter((event: any) => {
+          // Prevent default browser zoom behavior
+          if (event.type === 'wheel') event.preventDefault();
+          return true;
+        })
+        .on('zoom', (event: any) => {
+          const { transform } = event;
+          const { scale: s0, translate: t0 } = viewStateRef.mercatorInitial;
+
+          projection.scale(s0 * transform.k);
+          projection.translate([
             t0[0] * transform.k + transform.x,
             t0[1] * transform.k + transform.y,
-        ]);
-        if (renderFuncRef.current) renderFuncRef.current();
-      });
+          ]);
+
+          // Throttle rendering using RAF
+          if (rafId === null) {
+            rafId = requestAnimationFrame(() => {
+              if (renderFuncRef.current) renderFuncRef.current();
+              rafId = null;
+            });
+          }
+        });
+
       zoomBehaviorRef.current = zoom;
       d3.select(parentNode).call(zoom);
     }
     
     if (renderFuncRef.current) renderFuncRef.current();
+
+    // Trigger routes re-render after setup completes
+    setSetupComplete(prev => prev + 1);
 
   }, [is3DView, worldData, airportData, dimensions.width, dimensions.height]);
 

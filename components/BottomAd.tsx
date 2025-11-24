@@ -12,13 +12,15 @@ const BottomAd: React.FC<BottomAdProps> = ({ isSquare = false }) => {
     }
     
     const baseClasses = "relative bg-gray-100/90 backdrop-blur-sm border border-gray-300 shadow-lg flex items-center justify-center text-gray-500 font-semibold text-center px-4";
-    
-    const shapeClasses = isSquare 
-        ? "aspect-square rounded-lg" 
+
+    const shapeClasses = isSquare
+        ? "rounded-lg"
         : "h-24 rounded-lg md:rounded-none md:border-x-0";
 
+    const sizeStyles = isSquare ? { width: '300px', height: '250px' } : {};
+
     return (
-        <div className={`${baseClasses} ${shapeClasses}`}>
+        <div className={`${baseClasses} ${shapeClasses}`} style={sizeStyles}>
             <span>Advertisement Placeholder</span>
             <button
                 onClick={() => setIsVisible(false)}

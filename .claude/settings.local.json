@@ -1,0 +1,33 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm run dev:*)",
+      "Bash(npm install:*)",
+      "Bash(dir:*)",
+      "WebFetch(domain:cdn.jsdelivr.net)",
+      "WebSearch",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:aviation-edge.com)",
+      "WebFetch(domain:developers.skyscanner.net)",
+      "WebFetch(domain:www.partners.skyscanner.net)",
+      "WebFetch(domain:aviationstack.com)",
+      "Bash(npm start)",
+      "WebFetch(domain:rapidapi.com)",
+      "WebFetch(domain:pub.dev)",
+      "Bash(netstat:*)",
+      "Bash(findstr:*)",
+      "Bash(taskkill:*)",
+      "Bash(curl:*)",
+      "Bash(timeout 5 bash:*)",
+      "Bash(python -m json.tool:*)",
+      "WebFetch(domain:serpapi.com)",
+      "Bash(move \"C:\\Users\\lenovo\\Documents\\ditect flights\\https-github.com-chose166-Direct-flight.com\\publiclogo\\Gemini_Generated_Image_ebjpebebjpebebjp.png\" \"C:\\Users\\lenovo\\Documents\\ditect flights\\https-github.com-chose166-Direct-flight.com\\public\\logo.png\")",
+      "Bash(cmd /c move:*)",
+      "Bash(cmd /c copy \"C:\\Users\\lenovo\\Documents\\ditect flights\\https-github.com-chose166-Direct-flight.com\\publiclogo\\Gemini_Generated_Image_ebjpebebjpebebjp.png\" \"C:\\Users\\lenovo\\Documents\\ditect flights\\https-github.com-chose166-Direct-flight.com\\public\\logo.png\")",
+      "Bash(git add:*)",
+      "Bash(git commit:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}
